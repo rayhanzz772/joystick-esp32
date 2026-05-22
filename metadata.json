@@ -1,0 +1,6 @@
+{
+  "name": "ESP32 WebSocket Servo Controller",
+  "description": "Real-time Joystick and Gamepad controller to command ESP32 servo motors over WebSockets.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
