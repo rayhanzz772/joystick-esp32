@@ -12,6 +12,10 @@ interface JoystickProps {
     invertY: boolean;
     springMode: boolean;
   };
+  lockAxis?: "pan" | "tilt" | "none";
+  sizeClass?: string;
+  knobClass?: string;
+  knobInnerClass?: string;
   onChange: (pan: number, tilt: number) => void;
 }
 
@@ -19,10 +23,24 @@ export const Joystick: React.FC<JoystickProps> = ({
   pan,
   tilt,
   settings,
+  lockAxis = "none",
+  sizeClass = "w-64 h-64",
+  knobClass = "w-20 h-20",
+  knobInnerClass = "w-12 h-12",
   onChange,
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const [isDragging, setIsDragging] = useState(false);
+
+  const applyAxisLock = (nextPan: number, nextTilt: number) => {
+    if (lockAxis === "pan") {
+      return { pan, tilt: nextTilt };
+    }
+    if (lockAxis === "tilt") {
+      return { pan: nextPan, tilt };
+    }
+    return { pan: nextPan, tilt: nextTilt };
+  };
   
   // Calculate visual knob offset percentages (-50% to +50%) based on current servo angles
   const getKnobOffset = () => {
@@ -64,7 +82,8 @@ export const Joystick: React.FC<JoystickProps> = ({
       // Snaps back to mid-range
       const panMid = Math.round((settings.panMax + settings.panMin) / 2);
       const tiltMid = Math.round((settings.tiltMax + settings.tiltMin) / 2);
-      onChange(panMid, tiltMid);
+      const locked = applyAxisLock(panMid, tiltMid);
+      onChange(locked.pan, locked.tilt);
     }
   };
 
@@ -110,7 +129,8 @@ export const Joystick: React.FC<JoystickProps> = ({
     const clampedPan = Math.max(settings.panMin, Math.min(settings.panMax, targetPan));
     const clampedTilt = Math.max(settings.tiltMin, Math.min(settings.tiltMax, targetTilt));
     
-    onChange(clampedPan, clampedTilt);
+    const locked = applyAxisLock(clampedPan, clampedTilt);
+    onChange(locked.pan, locked.tilt);
   };
 
   const offset = getKnobOffset();
@@ -121,10 +141,10 @@ export const Joystick: React.FC<JoystickProps> = ({
       <div
         id="joystick-housing"
         ref={containerRef}
-        className={`relative w-64 h-64 rounded-full border-2 bg-zinc-950 flex items-center justify-center touch-none transition-all duration-150 ${
+        className={`relative ${sizeClass} rounded-full border-2 bg-amber-50 flex items-center justify-center touch-none transition-all duration-150 ${
           isDragging
-            ? "border-rose-500 shadow-[0_0_20px_rgba(244,63,94,0.3)] bg-radial from-rose-950/20 to-zinc-950"
-            : "border-zinc-800 shadow-[inset_0_4px_16px_rgba(0,0,0,0.8)] bg-radial from-zinc-900 to-zinc-950"
+            ? "border-rose-500 shadow-[0_0_20px_rgba(244,63,94,0.3)] bg-radial from-amber-100 to-amber-200"
+            : "border-zinc-800 shadow-[inset_0_4px_16px_rgba(0,0,0,0.8)] bg-radial from-amber-50 to-amber-100"
         }`}
         onPointerDown={handlePointerDown}
         onPointerMove={handlePointerMove}
@@ -145,20 +165,20 @@ export const Joystick: React.FC<JoystickProps> = ({
         {/* Floating Joystick Thumb Knob */}
         <div
           id="joystick-knob"
-          className="absolute w-20 h-20 rounded-full flex items-center justify-center shadow-2xl transition-all duration-75"
+          className={`absolute ${knobClass} rounded-full flex items-center justify-center shadow-2xl transition-all duration-75`}
           style={{
             transform: `translate(${offset.x}px, ${offset.y}px)`,
             background: isDragging 
-              ? "radial-gradient(circle, #f43f5e 0%, #be123c 100%)" 
+              ? "radial-gradient(circle, #f43f5e 0%, #f75e84 100%)" 
               : "radial-gradient(circle, #3f3f46 0%, #18181b 100%)",
-            border: isDragging ? "2px solid #fda4af" : "2px solid #52525b",
+            border: isDragging ? "2px solid #ffd0d6" : "2px solid #52525b",
             boxShadow: isDragging 
               ? "0 10px 25px -5px rgba(244, 63, 94, 0.5), inset 0 -4px 8px rgba(0,0,0,0.5)" 
               : "0 10px 20px -5px rgba(0, 0, 0, 0.8), inset 0 -4px 8px rgba(0,0,0,0.4)"
           }}
         >
           {/* Inner metallic style circle */}
-          <div className="w-12 h-12 rounded-full border border-zinc-700 bg-zinc-900/40 flex items-center justify-center">
+          <div className={`${knobInnerClass} rounded-full border border-zinc-700 bg-zinc-900/40 flex items-center justify-center`}>
             <div className={`w-3 h-3 rounded-full ${isDragging ? "bg-rose-200 animate-ping" : "bg-zinc-600"}`} />
           </div>
         </div>

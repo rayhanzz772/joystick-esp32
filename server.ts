@@ -18,11 +18,12 @@ const clients = new Map<string, ClientInfo>();
 
 // Keep track of the last known controller state as a cache
 let lastControlState = {
-  pan: 90, // X axis servo (0 to 180, default 90 centered)
-  tilt: 90, // Y axis servo (0 to 180, default 90 centered)
-  speed: 0, // motor speed, accessory parameter
-  buttonA: false,
-  buttonB: false,
+  lx: 0, // Base axis (-1 to 1)
+  ly: 0, // Shoulder axis (-1 to 1)
+  ry: 0, // Elbow axis (-1 to 1)
+  speed: 2.0, // Servo speed scalar
+  r1: false,
+  l1: false,
   timestamp: Date.now(),
 };
 
@@ -157,11 +158,12 @@ async function startServer() {
           // Web client controls
           if (parsed.type === "control") {
             lastControlState = {
-              pan: isNaN(parsed.pan) ? 90 : parsed.pan,
-              tilt: isNaN(parsed.tilt) ? 90 : parsed.tilt,
-              speed: isNaN(parsed.speed) ? 0 : parsed.speed,
-              buttonA: !!parsed.buttonA,
-              buttonB: !!parsed.buttonB,
+              lx: typeof parsed.lx === "number" ? parsed.lx : 0,
+              ly: typeof parsed.ly === "number" ? parsed.ly : 0,
+              ry: typeof parsed.ry === "number" ? parsed.ry : 0,
+              speed: typeof parsed.speed === "number" ? parsed.speed : 2.0,
+              r1: !!parsed.r1,
+              l1: !!parsed.l1,
               timestamp: Date.now(),
             };
 

@@ -1,9 +1,10 @@
 export interface ControlState {
-  pan: number;     // Servo Pan angle (0-180)
-  tilt: number;    // Servo Tilt angle (0-180)
-  speed: number;   // Speed/throttling parameter (0-100)
-  buttonA: boolean; // Button A state
-  buttonB: boolean; // Button B state
+  pan: number; // Base axis angle (0-180)
+  tilt: number; // Shoulder axis angle (0-180)
+  elbow: number; // Elbow axis angle (0-180)
+  speed: number; // Motion speed scalar (0.5-10.0)
+  buttonA: boolean; // R1: open gripper
+  buttonB: boolean; // L1: close gripper
   timestamp: number;
 }
 
@@ -12,8 +13,10 @@ export interface TelemetryData {
   heapFree?: number;     // ESP32 Free Heap Memory
   uptime?: number;       // Uptime in seconds
   lastPacketId?: number; // Packet ID
-  servoCurrentPan?: number;
-  servoCurrentTilt?: number;
+  baseAngle?: number;
+  shldAngle?: number;
+  elbwAngle?: number;
+  grprAngle?: number;
 }
 
 export interface WebLog {

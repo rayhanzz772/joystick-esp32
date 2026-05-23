@@ -20,7 +20,7 @@ export const ESPCodeBlock: React.FC<ESPCodeBlockProps> = ({
   const [activeTab, setActiveTab] = useState<"secure" | "local">("secure");
   
   // Extract domain or host for local setup demonstration
-  let localIPPlaceholder = "192.168.1.100";
+  let localIPPlaceholder = "192.168.1.32";
   let hostStr = wsUrl;
   let portStr = "3000";
   let isSecure = wsUrl.startsWith("wss");
@@ -43,12 +43,11 @@ export const ESPCodeBlock: React.FC<ESPCodeBlockProps> = ({
     const isWSS = activeTab === "secure";
     
     return `/**
- * ESP32 Servo Controller & Joystick Web Client
- * 
- * required Libraries (Download via Arduino Library Manager):
- * 1. "WebSockets" by Markus Sattler
- * 2. "ArduinoJson" by Benoit Blanchon
- * 3. "ESP32Servo" by Kevin Harrington
+ * ============================================================
+ *  4DOF Robotic Arm - ESP32 WebSocket Controller
+ *  Library : ESP32Servo, WebSocketsClient, ArduinoJson
+ *  Servo   : Base(13) Shoulder(18) Elbow(19) Gripper(21)
+ * ============================================================
  */
 
 #include <WiFi.h>
@@ -57,166 +56,227 @@ export const ESPCodeBlock: React.FC<ESPCodeBlockProps> = ({
 #include <ESP32Servo.h>
 
 // WiFi Configuration
-const char* ssid = "NAMA_WIFI_ANDA";
-const char* password = "PASSWORD_WIFI_ANDA";
+const char* WIFI_SSID = "NAMA_WIFI_ANDA";
+const char* WIFI_PASSWORD = "PASSWORD_WIFI_ANDA";
 
 // WebSocket Server Configuration
 ${
   isWSS
-    ? `// Menghubungkan ke Cloud Run (Secure WSS)
-const char* ws_host = "${hostStr}";
-const int ws_port = ${portStr};
-const char* ws_url = "/?role=esp32";`
-    : `// Menghubungkan ke Mesin Lokal / ESP32 dalam satu Jaringan (Unsecure WS)
-const char* ws_host = "${localIPPlaceholder}"; // Ganti dengan IP komputer Anda
-const int ws_port = 3000;
-const char* ws_url = "/?role=esp32";`
+    ? `// Secure WSS (Cloud)
+const char* WS_HOST = "${hostStr}";
+const int WS_PORT = ${portStr};
+const char* WS_URL = "/?role=esp32";`
+    : `// Local WS (Same network)
+const char* WS_HOST = "${localIPPlaceholder}"; // Ganti dengan IP komputer Anda
+const int WS_PORT = 3000;
+const char* WS_URL = "/?role=esp32";`
 }
 
-// Servo Pin Constants
-const int PAN_PIN = 18;  // Hubungkan ke pin sinyal Servo Pan (Horizontal)
-const int TILT_PIN = 19; // Hubungkan ke pin sinyal Servo Tilt (Vertical)
-const int LED_PIN = 2;   // Onboard LED ESP32 untuk indikator koneksi
+// Servo Pins
+const int PIN_BASE = 13;
+const int PIN_SHOULDER = 18;
+const int PIN_ELBOW = 19;
+const int PIN_GRIPPER = 21;
+const int PIN_LED = 2;
 
-// Servo Objects and Angle Constraints
-Servo panServo;
-Servo tiltServo;
+// Servo PWM config
+const int SERVO_MIN_US = 500;
+const int SERVO_MAX_US = 2400;
+const int SERVO_FREQ = 50;
 
-const int PAN_MIN = ${panMin};
-const int PAN_MAX = ${panMax};
-const int TILT_MIN = ${tiltMin};
-const int TILT_MAX = ${tiltMax};
+struct ServoLimit {
+  int minAngle;
+  int maxAngle;
+};
 
-// Client Instance
+const ServoLimit LIMIT_BASE = {0, 180};
+const ServoLimit LIMIT_SHOULDER = {20, 160};
+const ServoLimit LIMIT_ELBOW = {0, 180};
+const ServoLimit LIMIT_GRIPPER = {0, 90};
+
+const float SERVO_SPEED = 2.0f;
+const float DEADZONE = 0.12f;
+const int LOOP_DELAY_MS = 20;
+
+struct ServoState {
+  float current;
+  float target;
+  Servo servo;
+};
+
+ServoState base, shoulder, elbow, gripper;
 WebSocketsClient webSocket;
-unsigned long lastTelemetryTime = 0;
+bool wsConnected = false;
 
-void webSocketEvent(WStype_t type, uint8_t * payload, size_t length) {
-  switch(type) {
+unsigned long lastTelemetryMs = 0;
+const unsigned long TELEMETRY_INTERVAL = 5000;
+
+float applyDeadzone(float value) {
+  if (fabsf(value) < DEADZONE) return 0.0f;
+  float sign = (value > 0.0f) ? 1.0f : -1.0f;
+  return sign * (fabsf(value) - DEADZONE) / (1.0f - DEADZONE);
+}
+
+void stepServo(ServoState& s, const ServoLimit& limit) {
+  s.target = constrain(s.target, (float)limit.minAngle, (float)limit.maxAngle);
+  float diff = s.target - s.current;
+  if (fabsf(diff) < 0.5f) return;
+  float step = constrain(diff, -SERVO_SPEED, SERVO_SPEED);
+  s.current += step;
+  s.servo.write((int)s.current);
+}
+
+void initServo(ServoState& s, int pin, int initialAngle, const ServoLimit& limit) {
+  s.servo.setPeriodHertz(SERVO_FREQ);
+  s.servo.attach(pin, SERVO_MIN_US, SERVO_MAX_US);
+  s.current = (float)constrain(initialAngle, limit.minAngle, limit.maxAngle);
+  s.target = s.current;
+  s.servo.write((int)s.current);
+}
+
+void handleControlMessage(const JsonDocument& doc) {
+  float lx = applyDeadzone(doc["lx"] | 0.0f);
+  float ly = applyDeadzone(doc["ly"] | 0.0f);
+  float ry = applyDeadzone(doc["ry"] | 0.0f);
+  bool r1 = doc["r1"] | false;
+  bool l1 = doc["l1"] | false;
+  float spd = doc["speed"] | SERVO_SPEED;
+  spd = constrain(spd, 0.5f, 10.0f);
+
+  base.target += lx * spd;
+  shoulder.target -= ly * spd;
+  elbow.target -= ry * spd;
+
+  if (r1) gripper.target += spd;
+  if (l1) gripper.target -= spd;
+
+  Serial.printf("[CTRL] Base=%.1f Shldr=%.1f Elbow=%.1f Grpr=%.1f | lx=%.2f ly=%.2f ry=%.2f R1=%d L1=%d\n",
+    base.target, shoulder.target, elbow.target, gripper.target,
+    lx, ly, ry, r1, l1);
+}
+
+void webSocketEvent(WStype_t type, uint8_t* payload, size_t length) {
+  switch (type) {
     case WStype_DISCONNECTED:
-      Serial.println("[WS] Terputus!");
-      digitalWrite(LED_PIN, LOW); // Matikan indikator LED
+      wsConnected = false;
+      digitalWrite(PIN_LED, LOW);
+      Serial.println("[WS] Terputus dari server");
       break;
-      
+
     case WStype_CONNECTED:
-      Serial.printf("[WS] Terhubung ke: %s\\n", payload);
-      digitalWrite(LED_PIN, HIGH); // Nyalakan indikator LED
+      wsConnected = true;
+      digitalWrite(PIN_LED, HIGH);
+      Serial.printf("[WS] Terhubung ke %s\n", payload);
+      webSocket.sendTXT("{\"type\":\"hello\",\"device\":\"esp32-arm\"}");
       break;
-      
-    case WStype_TEXT:
-      {
-        // Parsing data JSON yang diterima
-        StaticJsonDocument<256> doc;
-        DeserializationError error = deserializeJson(doc, payload, length);
-        
-        if (error) {
-          Serial.print(F("Parsing gagal: "));
-          Serial.println(error.f_str());
-          return;
-        }
-        
-        const char* msgType = doc["type"];
-        if (msgType && strcmp(msgType, "control") == 0) {
-          int panVal = doc["pan"];
-          int tiltVal = doc["tilt"];
-          int speed = doc["speed"];
-          bool buttonA = doc["buttonA"] | false;
-          bool buttonB = doc["buttonB"] | false;
-          
-          // Batasi sudut servo secara aman
-          panVal = constrain(panVal, PAN_MIN, PAN_MAX);
-          tiltVal = constrain(tiltVal, TILT_MIN, TILT_MAX);
-          
-          // Tulis sinyal PWM ke Motor Servo
-          panServo.write(panVal);
-          tiltServo.write(tiltVal);
-          
-          Serial.printf("[Servo] Menulis Pan: %d, Tilt: %d | TombolA: %s, TombolB: %s\\n", 
-                        panVal, tiltVal, buttonA ? "ON" : "OFF", buttonB ? "ON" : "OFF");
-        }
+
+    case WStype_TEXT: {
+      StaticJsonDocument<256> doc;
+      DeserializationError err = deserializeJson(doc, payload, length);
+      if (err) {
+        Serial.printf("[WS] JSON error: %s\n", err.f_str());
+        return;
+      }
+
+      const char* msgType = doc["type"] | "";
+      if (strcmp(msgType, "control") == 0) {
+        handleControlMessage(doc);
+      } else if (strcmp(msgType, "reset") == 0) {
+        base.target = 90.0f;
+        shoulder.target = 90.0f;
+        elbow.target = 90.0f;
+        gripper.target = 45.0f;
+        Serial.println("[WS] Reset ke posisi home");
       }
       break;
-      
-    case WStype_BIN:
-      Serial.println("[WS] Menerima data biner");
-      break;
-      
-    case WStype_PING:
-      break;
-      
-    case WStype_PONG:
+    }
+    default:
       break;
   }
+}
+
+void sendTelemetry() {
+  if (!wsConnected) return;
+
+  StaticJsonDocument<256> doc;
+  doc["type"] = "telemetry";
+  doc["wifiRSSI"] = WiFi.RSSI();
+  doc["heapFree"] = ESP.getFreeHeap();
+  doc["uptime"] = millis() / 1000;
+  doc["baseAngle"] = (int)base.current;
+  doc["shldAngle"] = (int)shoulder.current;
+  doc["elbwAngle"] = (int)elbow.current;
+  doc["grprAngle"] = (int)gripper.current;
+
+  String out;
+  serializeJson(doc, out);
+  webSocket.sendTXT(out);
 }
 
 void setup() {
   Serial.begin(115200);
-  pinMode(LED_PIN, OUTPUT);
-  digitalWrite(LED_PIN, LOW);
+  Serial.println("\n=== 4DOF Robotic Arm - ESP32 WebSocket ===");
 
-  // Alokasi timer PWM untuk ESP32Servo
+  pinMode(PIN_LED, OUTPUT);
+  digitalWrite(PIN_LED, LOW);
+
   ESP32PWM::allocateTimer(0);
   ESP32PWM::allocateTimer(1);
-  
-  // Setup Motor Servo
-  panServo.setPeriodHertz(50); // Standar 50Hz servo
-  tiltServo.setPeriodHertz(50);
-  
-  panServo.attach(PAN_PIN, 500, 2400); // Pasangkan Servo dengan pulsa min/max standar
-  tiltServo.attach(TILT_PIN, 500, 2400);
+  ESP32PWM::allocateTimer(2);
+  ESP32PWM::allocateTimer(3);
 
-  // Set awal ke posisi tengah aman
-  panServo.write((PAN_MAX + PAN_MIN) / 2);
-  tiltServo.write((TILT_MAX + TILT_MIN) / 2);
+  initServo(base, PIN_BASE, 90, LIMIT_BASE);
+  initServo(shoulder, PIN_SHOULDER, 90, LIMIT_SHOULDER);
+  initServo(elbow, PIN_ELBOW, 90, LIMIT_ELBOW);
+  initServo(gripper, PIN_GRIPPER, 45, LIMIT_GRIPPER);
 
-  // Menyalakan WiFi
-  Serial.printf("\\nMenghubungkan ke %s", ssid);
-  WiFi.begin(ssid, password);
-  
+  delay(1000);
+
+  Serial.printf("[WIFI] Menghubungkan ke %s", WIFI_SSID);
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+
+  int wifiRetry = 0;
   while (WiFi.status() != WL_CONNECTED) {
     delay(500);
     Serial.print(".");
+    if (++wifiRetry > 40) {
+      Serial.println("\n[WIFI] Gagal! Restart dalam 3 detik...");
+      delay(3000);
+      ESP.restart();
+    }
   }
-  
-  Serial.println("");
-  Serial.println("WiFi Terhubung!");
-  Serial.print("Alamat IP ESP32: ");
-  Serial.println(WiFi.localIP());
 
-  // Inisialisasi WebSocket Client
+  Serial.printf("\n[WIFI] Terhubung | IP: %s | RSSI: %d dBm\n",
+    WiFi.localIP().toString().c_str(), WiFi.RSSI());
+
   ${
     isWSS
-      ? `// Hubungkan ke Secure WSS Cloud (Menggunakan bypass keamanan SSL)
-  webSocket.beginSslWithClient(ws_host, ws_port, ws_url);`
-      : `// Hubungkan ke server WebSocket lokal
-  webSocket.begin(ws_host, ws_port, ws_url);`
+      ? `webSocket.beginSslWithClient(WS_HOST, WS_PORT, WS_URL);`
+      : `webSocket.begin(WS_HOST, WS_PORT, WS_URL);`
   }
-
-  // Tentukan callback event
   webSocket.onEvent(webSocketEvent);
-  
-  // Mencoba tersambung kembali otomatis jika terputus
-  webSocket.setReconnectInterval(5000);
+  webSocket.setReconnectInterval(3000);
+
+  Serial.printf("[WS] Target: ws://%s:%d%s\n", WS_HOST, WS_PORT, WS_URL);
+  Serial.println("[SIAP] Menunggu perintah controller...");
 }
 
 void loop() {
   webSocket.loop();
-  
-  // Kirim data telemetri berkala setiap 5 detik ke Web Monitor
+
+  stepServo(base, LIMIT_BASE);
+  stepServo(shoulder, LIMIT_SHOULDER);
+  stepServo(elbow, LIMIT_ELBOW);
+  stepServo(gripper, LIMIT_GRIPPER);
+
   unsigned long now = millis();
-  if (now - lastTelemetryTime > 5000 && WiFi.status() == WL_CONNECTED) {
-    lastTelemetryTime = now;
-    
-    StaticJsonDocument<200> txDoc;
-    txDoc["type"] = "telemetry";
-    txDoc["wifiRSSI"] = WiFi.RSSI();
-    txDoc["heapFree"] = ESP.getFreeHeap();
-    txDoc["uptime"] = now / 1000;
-    
-    String output;
-    serializeJson(txDoc, output);
-    webSocket.sendTXT(output);
+  if (now - lastTelemetryMs >= TELEMETRY_INTERVAL) {
+    lastTelemetryMs = now;
+    sendTelemetry();
   }
+
+  delay(LOOP_DELAY_MS);
 }`;
   };
 
@@ -288,7 +348,7 @@ void loop() {
           <span>Pin default: <strong>PAN_PIN = GPIO 18</strong> | <strong>TILT_PIN = GPIO 19</strong> (ESP32)</span>
         </div>
         <div>
-          <span>URL Koneksi: <code>{activeTab === "secure" ? wsUrl : `ws://192.168.1.xxx:3000/?role=esp32`}</code></span>
+          <span>URL Koneksi: <code>{activeTab === "secure" ? wsUrl : `ws://${localIPPlaceholder}:3000/?role=esp32`}</code></span>
         </div>
       </div>
     </div>
